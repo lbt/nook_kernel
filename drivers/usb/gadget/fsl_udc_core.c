@@ -549,14 +549,20 @@ static int fsl_ep_disable(struct usb_ep *_ep)
 		return -EINVAL;
 	}
 
-	/* disable ep on controller */
-	ep_num = ep_index(ep);
-	epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
-	if (ep_is_in(ep))
-		epctrl &= ~EPCTRL_TX_ENABLE;
-	else
-		epctrl &= ~EPCTRL_RX_ENABLE;
-	fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (udc_controller->vbus_active)
+#endif
+	{
+		/* disable ep on controller */
+		ep_num = ep_index(ep);
+		epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
+		if (ep_is_in(ep))
+			epctrl &= ~EPCTRL_TX_ENABLE;
+		else
+			epctrl &= ~EPCTRL_RX_ENABLE;
+		fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+	}
 
 	udc = (struct fsl_udc *)ep->udc;
 	spin_lock_irqsave(&udc->lock, flags);
@@ -857,12 +863,19 @@ static int fsl_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	/* Stop the ep before we deal with the queue */
 	ep->stopped = 1;
 	ep_num = ep_index(ep);
-	epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
-	if (ep_is_in(ep))
-		epctrl &= ~EPCTRL_TX_ENABLE;
-	else
-		epctrl &= ~EPCTRL_RX_ENABLE;
-	fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (udc_controller->vbus_active)
+#endif
+	{
+		epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
+		if (ep_is_in(ep))
+			epctrl &= ~EPCTRL_TX_ENABLE;
+		else
+			epctrl &= ~EPCTRL_RX_ENABLE;
+		fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+	}
 
 	/* make sure it's actually queued on this endpoint */
 	list_for_each_entry(req, &ep->queue, queue) {
@@ -905,12 +918,19 @@ static int fsl_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	done(ep, req, -ECONNRESET);
 
 	/* Enable EP */
-out:	epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
-	if (ep_is_in(ep))
-		epctrl |= EPCTRL_TX_ENABLE;
-	else
-		epctrl |= EPCTRL_RX_ENABLE;
-	fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+out:
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (udc_controller->vbus_active)
+#endif
+	{
+		epctrl = fsl_readl(&dr_regs->endptctrl[ep_num]);
+		if (ep_is_in(ep))
+			epctrl |= EPCTRL_TX_ENABLE;
+		else
+			epctrl |= EPCTRL_RX_ENABLE;
+		fsl_writel(epctrl, &dr_regs->endptctrl[ep_num]);
+	}
 	ep->stopped = stopped;
 
 	spin_unlock_irqrestore(&ep->udc->lock, flags);
@@ -978,6 +998,12 @@ static void fsl_ep_fifo_flush(struct usb_ep *_ep)
 	unsigned long timeout;
 #define FSL_UDC_FLUSH_TIMEOUT 1000
 
+#if defined(CONFIG_ARCH_TEGRA)
+	/* Touch the registers if cable is connected and phy is on */
+	if (!udc_controller->vbus_active)
+		return;
+#endif
+
 	if (!_ep) {
 		return;
 	} else {
@@ -1037,6 +1063,7 @@ static int fsl_get_frame(struct usb_gadget *gadget)
 	return (int)(fsl_readl(&dr_regs->frindex) & USB_FRINDEX_MASKS);
 }
 
+#ifndef CONFIG_USB_ANDROID
 /*-----------------------------------------------------------------------
  * Tries to wake up the host connected to this gadget
  -----------------------------------------------------------------------*/
@@ -1058,6 +1085,7 @@ static int fsl_wakeup(struct usb_gadget *gadget)
 	fsl_writel(portsc, &dr_regs->portsc1);
 	return 0;
 }
+#endif
 
 static int can_pullup(struct fsl_udc *udc)
 {
@@ -1685,7 +1713,168 @@ static void reset_irq(struct fsl_udc *udc)
 		dr_controller_run(udc);
 		udc->usb_state = USB_STATE_ATTACHED;
 	}
+#endif
 }
+
+/*
+ * If VBUS is detected and setup packet is not received in 100ms then
+ * work thread starts and checks for the USB charger detection.
+ */
+static void fsl_udc_charger_detection(struct work_struct* work)
+{
+	struct fsl_udc *udc = container_of (work, struct fsl_udc, work.work);
+
+	/* check for the platform charger detection */
+	if (platform_udc_charger_detection()) {
+		printk("Dedicated charger detected\n");
+	} else {
+		printk("Dumb charger detected\n");
+	}
+	/* check udc regulator is avalable for drawing the vbus current */
+	if (udc->vbus_regulator) {
+		/* set the current limit in uA */
+		regulator_set_current_limit(udc->vbus_regulator, 0,
+					USB_CHARGING_CURRENT_LIMIT_MA*1000);
+	}
+}
+
+static void fsl_ep_fifo_flush_all(void)
+{
+	u32 bits = 0xFFFFFFFF;
+	unsigned long timeout;
+#define FSL_UDC_FLUSH_TIMEOUT 1000
+
+	timeout = jiffies + FSL_UDC_FLUSH_TIMEOUT;
+	do {
+		fsl_writel(bits, &dr_regs->endptflush);
+
+		/* Wait until flush complete */
+		while (fsl_readl(&dr_regs->endptflush)) {
+			if (time_after(jiffies, timeout)) {
+				ERR("ep flush timeout\n");
+				return;
+			}
+			cpu_relax();
+		}
+		/* See if we need to flush again */
+	} while (fsl_readl(&dr_regs->endptstatus) & bits);
+}
+
+#if defined(CONFIG_ARCH_TEGRA)
+/*
+ * Restart device controller in the OTG mode on VBUS detection
+ */
+static void fsl_udc_restart(struct fsl_udc *udc)
+{
+	/* setup the controller in the device mode */
+	dr_controller_setup(udc);
+	/* setup EP0 for setup packet */
+	ep0_setup(udc);
+	/* start the controller */
+	dr_controller_run(udc);
+	/* initialize the USB and EP states */
+	udc->usb_state = USB_STATE_ATTACHED;
+	udc->ep0_state = WAIT_FOR_SETUP;
+	udc->ep0_dir = 0;
+}
+
+/*
+ * Work thread function for handling the USB clocks and D+ line pull up/down.
+ */
+static void fsl_udc_vbus_work(struct work_struct* vbus_work)
+{
+	struct fsl_udc *udc = container_of (vbus_work, struct fsl_udc, vbus_work);
+
+	if(udc->vbus_active) {
+		platform_udc_clk_resume();
+		fsl_udc_restart(udc);
+	} else {
+		spin_lock(&udc->lock);
+		reset_queues(udc);
+		spin_unlock(&udc->lock);
+		fsl_ep_fifo_flush_all();
+		dr_controller_stop(udc);
+		platform_udc_clk_suspend();
+	}
+
+	if (can_pullup(udc))
+		fsl_writel((fsl_readl(&dr_regs->usbcmd) | USB_CMD_RUN_STOP),
+				&dr_regs->usbcmd);
+	else
+		fsl_writel((fsl_readl(&dr_regs->usbcmd) & ~USB_CMD_RUN_STOP),
+				&dr_regs->usbcmd);
+}
+#endif
+
+
+/*
+ * Work thread function for handling the USB power sequence.
+ *
+ * This work thread is created to avoid the pre-emption from the ISR context.
+ * USB Power Rail is controlled based on the USB cable connection.
+ * USB Power rail function cannot be called from ISR as NvRmPmuSetVoltage()
+ * uses I2C driver, that waits on semaphore during the I2C transaction
+ * this will cause the pre-emption if called in ISR.
+ */
+static void fsl_udc_irq_work(struct work_struct* irq_work)
+{
+	struct fsl_udc *udc = container_of (irq_work, struct fsl_udc, irq_work);
+	bool cable_connected = false;
+	bool cable_disconnected = false;
+
+	/* check OTG tranceiver is available or not */
+	if (udc->transceiver) {
+		if ((udc->transceiver->state == OTG_STATE_B_PERIPHERAL) &&
+			(!udc->vbus_active)) {
+			cable_connected = true;
+		} else if ((udc->transceiver->state == OTG_STATE_A_SUSPEND) &&
+			(udc->vbus_active)) {
+			cable_disconnected = true;
+		}
+	}else {
+		u32 temp = 0;
+		/* Check VBUS status register for cable connection */
+		temp = fsl_readl(&usb_sys_regs->vbus_wakeup);
+		if (temp & USB_SYS_VBUS_STATUS) {
+			if (!udc->vbus_active) {
+				cable_connected = true;
+			}
+		} else {
+			if (udc->vbus_active) {
+				cable_disconnected = true;
+			}
+		}
+	}
+
+	if (cable_connected) {
+		/* set vbus active  and enable the usb clocks */
+		udc->vbus_active = 1;
+		platform_udc_clk_resume();
+		fsl_udc_restart(udc);
+		/* Schedule work to wait for 1000 msec and check for
+		 * charger if setup packet is not received */
+		schedule_delayed_work(&udc->work, USB_CHARGER_DETECTION_WAIT_TIME_MS);
+		udc->current_limit_ma = USB_DEFAULT_CURRENT_LIMIT_MA;
+	}
+
+	if (cable_disconnected) {
+		/* If cable disconnected, cancel any delayed work */
+		cancel_delayed_work(&udc->work);
+		/* Reset all internal Queues and inform client driver */
+		spin_lock(&udc->lock);
+		reset_queues(udc);
+		spin_unlock(&udc->lock);
+		/* flush all the eps before turing off the clocks */
+		fsl_ep_fifo_flush_all();
+		/* stop the controller and turn off the clocks */
+		dr_controller_stop(udc);
+		udc->vbus_active = 0;
+		platform_udc_clk_suspend();
+		udc->usb_state = USB_STATE_DEFAULT;
+		udc->current_limit_ma = 0;
+		if (udc->transceiver)
+			udc->transceiver->state = OTG_STATE_UNDEFINED;
+	}
 
 /*
  * USB device controller interrupt handler
