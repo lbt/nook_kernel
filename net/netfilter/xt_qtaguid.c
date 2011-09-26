@@ -102,11 +102,10 @@ static bool qtu_proc_handling_passive;
 module_param_named(tag_tracking_passive, qtu_proc_handling_passive, bool,
 		   S_IRUGO | S_IWUSR);
 
-
 #define QTU_DEV_NAME "xt_qtaguid"
 
-uint debug_mask = DEFAULT_DEBUG_MASK;
-module_param(debug_mask, uint, S_IRUGO | S_IWUSR);
+uint qtaguid_debug_mask = DEFAULT_DEBUG_MASK;
+module_param_named(debug_mask, qtaguid_debug_mask, uint, S_IRUGO | S_IWUSR);
 
 /*---------------------------------------------------------------------------*/
 static const char *iface_stat_procdirname = "iface_stat";
@@ -123,70 +122,92 @@ static struct proc_dir_entry *iface_stat_procdir;
  * Notice how sock_tag_list_lock is held sometimes when uid_tag_data_tree_lock
  * is acquired.
  *
- * Call tree with all lock holders as of 2011-09-06:
+ * Call tree with all lock holders as of 2011-09-25:
  *
- *   qtaguid_ctrl_parse()
- *     ctrl_cmd_delete()
- *       sock_tag_list_lock
- *       tag_counter_set_list_lock
- *       iface_stat_list_lock
- *         iface_entry->tag_stat_list_lock
- *       uid_tag_data_tree_lock
- *     ctrl_cmd_counter_set()
- *       tag_counter_set_list_lock
- *     ctrl_cmd_tag()
- *       sock_tag_list_lock
- *         get_tag_ref()
- *           uid_tag_data_tree_lock
- *       uid_tag_data_tree_lock
- *     ctrl_cmd_untag()
- *       sock_tag_list_lock
+ * iface_stat_all_proc_read()
+ *   iface_stat_list_lock
+ *     (struct iface_stat)
+ *
+ * qtaguid_ctrl_proc_read()
+ *   sock_tag_list_lock
+ *     (sock_tag_tree)
+ *     (struct proc_qtu_data->sock_tag_list)
+ *   prdebug_full_state()
+ *     sock_tag_list_lock
+ *       (sock_tag_tree)
+ *     uid_tag_data_tree_lock
+ *       (uid_tag_data_tree)
+ *       (proc_qtu_data_tree)
+ *     iface_stat_list_lock
+ *
+ * qtaguid_stats_proc_read()
+ *   iface_stat_list_lock
+ *     struct iface_stat->tag_stat_list_lock
+ *
+ * qtudev_open()
+ *   uid_tag_data_tree_lock
+ *
+ * qtudev_release()
+ *   sock_tag_data_list_lock
+ *     uid_tag_data_tree_lock
+ *   prdebug_full_state()
+ *     sock_tag_list_lock
+ *     uid_tag_data_tree_lock
+ *     iface_stat_list_lock
+ *
+ * iface_netdev_event_handler()
+ *   iface_stat_create()
+ *     iface_stat_list_lock
+ *   iface_stat_update()
+ *     iface_stat_list_lock
+ *
+ * iface_inetaddr_event_handler()
+ *   iface_stat_create()
+ *     iface_stat_list_lock
+ *   iface_stat_update()
+ *     iface_stat_list_lock
+ *
+ * iface_inet6addr_event_handler()
+ *   iface_stat_create_ipv6()
+ *     iface_stat_list_lock
+ *   iface_stat_update()
+ *     iface_stat_list_lock
+ *
+ * qtaguid_mt()
+ *   account_for_uid()
+ *     if_tag_stat_update()
+ *       get_sock_stat()
+ *         sock_tag_list_lock
+ *       struct iface_stat->tag_stat_list_lock
+ *         tag_stat_update()
+ *           get_active_counter_set()
+ *             tag_counter_set_list_lock
+ *         tag_stat_update()
+ *           get_active_counter_set()
+ *             tag_counter_set_list_lock
+ *
+ *
+ * qtaguid_ctrl_parse()
+ *   ctrl_cmd_delete()
+ *     sock_tag_list_lock
+ *     tag_counter_set_list_lock
+ *     iface_stat_list_lock
+ *       struct iface_stat->tag_stat_list_lock
+ *     uid_tag_data_tree_lock
+ *   ctrl_cmd_counter_set()
+ *     tag_counter_set_list_lock
+ *   ctrl_cmd_tag()
+ *     sock_tag_list_lock
+ *       (sock_tag_tree)
+ *       get_tag_ref()
  *         uid_tag_data_tree_lock
- *
- *   qtaguid_mt()
- *     account_for_uid()
- *       if_tag_stat_update()
- *     get_sock_stat()
- *       sock_tag_list_lock
- *        iface_entry->tag_stat_list_lock
- *        tag_stat_update()
- *          get_active_counter_set()
- *            tag_counter_set_list_lock
- *
- *   iface_netdev_event_handler()
- *     iface_stat_create()
- *       iface_stat_list_lock
- *     iface_stat_update()
- *       iface_stat_list_lock
- *
- *   iface_inet6addr_event_handler()
- *     iface_stat_create_ipv6()
- *       iface_stat_list_lock
- *     iface_stat_update()
- *       iface_stat_list_lock
- *
- *   iface_inetaddr_event_handler()
- *     iface_stat_create()
- *       iface_stat_list_lock
- *     iface_stat_update()
- *       iface_stat_list_lock
- *
- *   qtaguid_ctrl_proc_read()
- *     sock_tag_list_lock
- *     sock_tag_list_lock
- *     uid_tag_data_tree_lock
- *     iface_stat_list_lock
- *
- *   qtaguid_stats_proc_read()
- *     iface_stat_list_lock
- *       iface_entry->tag_stat_list_lock
- *
- *   qtudev_open()
- *     uid_tag_data_tree_lock
- *
- *   qtud_dev_release()
- *     sock_tag_list_lock
+ *           (uid_tag_data_tree)
  *       uid_tag_data_tree_lock
+ *         (proc_qtu_data_tree)
+ *   ctrl_cmd_untag()
+ *     sock_tag_list_lock
+ *     uid_tag_data_tree_lock
+ *
  */
 static LIST_HEAD(iface_stat_list);
 static DEFINE_SPINLOCK(iface_stat_list_lock);
@@ -553,8 +574,8 @@ static struct tag_ref *new_tag_ref(tag_t new_tag,
 	utd_entry->num_active_tags++;
 	tag_ref_tree_insert(tr_entry, &utd_entry->tag_ref_tree);
 	DR_DEBUG("qtaguid: new_tag_ref(0x%llx): "
-		 " inserted new tag ref\n",
-		 new_tag);
+		 " inserted new tag ref %p\n",
+		 new_tag, tr_entry);
 	return tr_entry;
 
 err_res:
@@ -614,7 +635,8 @@ static struct tag_ref *get_tag_ref(tag_t full_tag,
 static void put_utd_entry(struct uid_tag_data *utd_entry)
 {
 	/* Are we done with the UID tag data entry? */
-	if (RB_EMPTY_ROOT(&utd_entry->tag_ref_tree)) {
+	if (RB_EMPTY_ROOT(&utd_entry->tag_ref_tree) &&
+		!utd_entry->num_pqd) {
 		DR_DEBUG("qtaguid: %s(): "
 			 "erase utd_entry=%p uid=%u "
 			 "by pid=%u tgid=%u uid=%u\n", __func__,
@@ -625,9 +647,11 @@ static void put_utd_entry(struct uid_tag_data *utd_entry)
 		kfree(utd_entry);
 	} else {
 		DR_DEBUG("qtaguid: %s(): "
-			 "utd_entry=%p still has %d tags\n", __func__,
-			 utd_entry, utd_entry->num_active_tags);
-		BUG_ON(!utd_entry->num_active_tags);
+			 "utd_entry=%p still has %d tags %d proc_qtu_data\n",
+			 __func__, utd_entry, utd_entry->num_active_tags,
+			 utd_entry->num_pqd);
+		BUG_ON(!(utd_entry->num_active_tags ||
+			 utd_entry->num_pqd));
 	}
 }
 
@@ -1236,8 +1260,8 @@ static void if_tag_stat_update(const char *ifname, uid_t uid,
 		new_tag_stat = create_if_tag_stat(iface_entry, tag);
 		new_tag_stat->parent_counters = uid_tag_counters;
 	}
-	spin_unlock_irqrestore(&iface_entry->tag_stat_list_lock, flags);
 	tag_stat_update(new_tag_stat, direction, proto, bytes);
+	spin_unlock_bh(&iface_entry->tag_stat_list_lock);
 }
 
 static int iface_netdev_event_handler(struct notifier_block *nb,
@@ -1564,9 +1588,57 @@ ret_res:
 	return res;
 }
 
-/* TODO: Use Documentation/filesystems/seq_file.txt? */
-static int qtaguid_ctrl_proc_read(char *page, char **start, off_t off,
-				int count, int *eof, void *data)
+#ifdef DDEBUG
+/* This function is not in xt_qtaguid_print.c because of locks visibility */
+static void prdebug_full_state(int indent_level, const char *fmt, ...)
+{
+	va_list args;
+	char *fmt_buff;
+	char *buff;
+
+	if (!unlikely(qtaguid_debug_mask & DDEBUG_MASK))
+		return;
+
+	fmt_buff = kasprintf(GFP_ATOMIC,
+			     "qtaguid: %s(): %s {\n", __func__, fmt);
+	BUG_ON(!fmt_buff);
+	va_start(args, fmt);
+	buff = kvasprintf(GFP_ATOMIC,
+			  fmt_buff, args);
+	BUG_ON(!buff);
+	pr_debug("%s", buff);
+	kfree(fmt_buff);
+	kfree(buff);
+	va_end(args);
+
+	spin_lock_bh(&sock_tag_list_lock);
+	prdebug_sock_tag_tree(indent_level, &sock_tag_tree);
+	spin_unlock_bh(&sock_tag_list_lock);
+
+	spin_lock_bh(&sock_tag_list_lock);
+	spin_lock_bh(&uid_tag_data_tree_lock);
+	prdebug_uid_tag_data_tree(indent_level, &uid_tag_data_tree);
+	prdebug_proc_qtu_data_tree(indent_level, &proc_qtu_data_tree);
+	spin_unlock_bh(&uid_tag_data_tree_lock);
+	spin_unlock_bh(&sock_tag_list_lock);
+
+	spin_lock_bh(&iface_stat_list_lock);
+	prdebug_iface_stat_list(indent_level, &iface_stat_list);
+	spin_unlock_bh(&iface_stat_list_lock);
+
+	pr_debug("qtaguid: %s(): }\n", __func__);
+}
+#else
+static void prdebug_full_state(int indent_level, const char *fmt, ...) {}
+#endif
+
+/*
+ * Procfs reader to get all active socket tags using style "1)" as described in
+ * fs/proc/generic.c
+ */
+static int qtaguid_ctrl_proc_read(char *page, char **num_items_returned,
+				  off_t items_to_skip, int char_count, int *eof,
+				  void *data)
 {
 	char *out = page + off;
 	int len;
@@ -1647,28 +1719,10 @@ static int qtaguid_ctrl_proc_read(char *page, char **start, off_t off,
 		}
 	}
 
-#ifdef CDEBUG
 	/* Count the following as part of the last item_index */
 	if (item_index > items_to_skip) {
-		CT_DEBUG("qtaguid: proc ctrl state debug {\n");
-		spin_lock_bh(&sock_tag_list_lock);
-		prdebug_sock_tag_tree(indent_level, &sock_tag_tree);
-		spin_unlock_bh(&sock_tag_list_lock);
-
-		spin_lock_bh(&uid_tag_data_tree_lock);
-		prdebug_uid_tag_data_tree(indent_level, &uid_tag_data_tree);
-		prdebug_proc_qtu_data_tree(indent_level, &proc_qtu_data_tree);
-		spin_unlock_bh(&uid_tag_data_tree_lock);
-
-		spin_lock_bh(&iface_stat_list_lock);
-		prdebug_iface_stat_list(indent_level, &iface_stat_list);
-		spin_unlock_bh(&iface_stat_list_lock);
-
-		CT_DEBUG("qtaguid: proc ctrl state debug }\n");
-
-
+		prdebug_full_state(indent_level, "proc ctrl");
 	}
-#endif
 
 	*eof = 1;
 	return outp - page;
@@ -1721,9 +1775,9 @@ static int ctrl_cmd_delete(const char *input)
 	}
 
 	tag = combine_atag_with_uid(acct_tag, uid);
-	CT_DEBUG("qtaguid: ctrl_delete(): "
+	CT_DEBUG("qtaguid: ctrl_delete(%s): "
 		 "looking for tag=0x%llx (uid=%u)\n",
-		 tag, uid);
+		 input, tag, uid);
 
 	/* Delete socket tags */
 	spin_lock_bh(&sock_tag_list_lock);
@@ -1735,8 +1789,8 @@ static int ctrl_cmd_delete(const char *input)
 		if (entry_uid != uid)
 			continue;
 
-		CT_DEBUG("qtaguid: ctrl_delete(): st tag=0x%llx (uid=%u)\n",
-			 st_entry->tag, entry_uid);
+		CT_DEBUG("qtaguid: ctrl_delete(%s): st tag=0x%llx (uid=%u)\n",
+			 input, st_entry->tag, entry_uid);
 
 		if (!acct_tag || st_entry->tag == tag) {
 			rb_erase(&st_entry->sock_node, &sock_tag_tree);
@@ -1745,6 +1799,7 @@ static int ctrl_cmd_delete(const char *input)
 			tr_entry = lookup_tag_ref(st_entry->tag, NULL);
 			BUG_ON(tr_entry->num_sock_tags <= 0);
 			tr_entry->num_sock_tags--;
+			list_del(&st_entry->list);
 		}
 	}
 	spin_unlock_irqrestore(&sock_tag_list_lock, flags);
@@ -1756,8 +1811,9 @@ static int ctrl_cmd_delete(const char *input)
 	/* Counter sets are only on the uid tag, not full tag */
 	tcs_entry = tag_counter_set_tree_search(&tag_counter_set_tree, tag);
 	if (tcs_entry) {
-		CT_DEBUG("qtaguid: ctrl_delete(): "
-			 "erase tcs: tag=0x%llx (uid=%d) set=%d\n",
+		CT_DEBUG("qtaguid: ctrl_delete(%s): "
+			 "erase tcs: tag=0x%llx (uid=%u) set=%d\n",
+			 input,
 			 tcs_entry->tn.tag,
 			 get_uid_from_tag(tcs_entry->tn.tag),
 			 tcs_entry->active_set);
@@ -1779,17 +1835,17 @@ static int ctrl_cmd_delete(const char *input)
 			entry_uid = get_uid_from_tag(ts_entry->tag);
 			node = rb_next(node);
 
-			CT_DEBUG("qtaguid: ctrl_delete(): "
+			CT_DEBUG("qtaguid: ctrl_delete(%s): "
 				 "ts tag=0x%llx (uid=%u)\n",
-				 ts_entry->tn.tag, entry_uid);
+				 input, ts_entry->tn.tag, entry_uid);
 
 			if (entry_uid != uid)
 				continue;
 			if (!acct_tag || ts_entry->tn.tag == tag) {
-				CT_DEBUG("qtaguid: ctrl_delete(): "
+				CT_DEBUG("qtaguid: ctrl_delete(%s): "
 					 "erase ts: %s 0x%llx %u\n",
-					 iface_entry->ifname,
-					 get_atag_from_tag(ts_entry->tag),
+					 input, iface_entry->ifname,
+					 get_atag_from_tag(ts_entry->tn.tag),
 					 entry_uid);
 				rb_erase(&ts_entry->node,
 					 &iface_entry->tag_stat_tree);
@@ -1808,9 +1864,9 @@ static int ctrl_cmd_delete(const char *input)
 		entry_uid = utd_entry->uid;
 		node = rb_next(node);
 
-		CT_DEBUG("qtaguid: ctrl_delete(): "
+		CT_DEBUG("qtaguid: ctrl_delete(%s): "
 			 "utd uid=%u\n",
-			 entry_uid);
+			 input, entry_uid);
 
 		if (entry_uid != uid)
 			continue;
@@ -2240,6 +2296,25 @@ static int print_stats_line(char *outp, int char_count, int item_index,
 	return len;
 }
 
+static bool pp_sets(struct proc_print_info *ppi)
+{
+	int len;
+	int counter_set;
+	for (counter_set = 0; counter_set < IFS_MAX_COUNTER_SETS;
+	     counter_set++) {
+		len = pp_stats_line(ppi, counter_set);
+		if (len >= ppi->char_count) {
+			*ppi->outp = '\0';
+			return false;
+		}
+		if (len) {
+			ppi->outp += len;
+			ppi->char_count -= len;
+			(*ppi->num_items_returned)++;
+		}
+	}
+	return true;
+}
 
 /*
  * Procfs reader to get all tag stats using style "1)" as described in
@@ -2333,7 +2408,7 @@ static int qtudev_open(struct inode *inode, struct file *file)
 {
 	struct uid_tag_data *utd_entry;
 	struct proc_qtu_data  *pqd_entry;
-	struct proc_qtu_data  *new_pqd_entry = 0;
+	struct proc_qtu_data  *new_pqd_entry;
 	int res;
 	bool utd_entry_found;
 
@@ -2375,12 +2450,14 @@ static int qtudev_open(struct inode *inode, struct file *file)
 	new_pqd_entry->pid = current->tgid;
 	INIT_LIST_HEAD(&new_pqd_entry->sock_tag_list);
 	new_pqd_entry->parent_tag_data = utd_entry;
+	utd_entry->num_pqd++;
 
 	proc_qtu_data_tree_insert(new_pqd_entry,
 				  &proc_qtu_data_tree);
 
 	spin_unlock_bh(&uid_tag_data_tree_lock);
-	DR_DEBUG("qtaguid: tracking data for uid=%u\n", current_fsuid());
+	DR_DEBUG("qtaguid: tracking data for uid=%u in pqd=%p\n",
+		 current_fsuid(), new_pqd_entry);
 	file->private_data = new_pqd_entry;
 	return 0;
 
@@ -2420,12 +2497,6 @@ static int qtudev_release(struct inode *inode, struct file *file)
 	spin_lock_bh(&sock_tag_list_lock);
 	spin_lock_bh(&uid_tag_data_tree_lock);
 
-	/*
-	 * If this proc didn't actually tag anything for itself, or has already
-	 * willingly cleaned up itself ...
-	 */
-	put_utd_entry(utd_entry);
-
 	list_for_each_safe(entry, next, &pqd_entry->sock_tag_list) {
 		st_entry = list_entry(entry, struct sock_tag, list);
 		DR_DEBUG("qtaguid: %s(): "
@@ -2454,10 +2525,18 @@ static int qtudev_release(struct inode *inode, struct file *file)
 		/* Can't sockfd_put() within spinlock, do it later. */
 		sock_tag_tree_insert(st_entry, &st_to_free_tree);
 
-		/* Do not put_utd_entry(utd_entry) someone elses utd_entry */
+		/*
+		 * Try to free the utd_entry if no other proc_qtu_data is
+		 * using it (num_pqd is 0) and it doesn't have active tags
+		 * (num_active_tags is 0).
+		 */
+		put_utd_entry(utd_entry);
 	}
 
 	rb_erase(&pqd_entry->node, &proc_qtu_data_tree);
+	BUG_ON(pqd_entry->parent_tag_data->num_pqd < 1);
+	pqd_entry->parent_tag_data->num_pqd--;
+	put_utd_entry(pqd_entry->parent_tag_data);
 	kfree(pqd_entry);
 	file->private_data = NULL;
 
@@ -2467,7 +2546,8 @@ static int qtudev_release(struct inode *inode, struct file *file)
 
 	sock_tag_tree_erase(&st_to_free_tree);
 
-
+	prdebug_full_state(0, "%s(): pid=%u tgid=%u", __func__,
+			   current->pid, current->tgid);
 	return 0;
 }
 
