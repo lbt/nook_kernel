@@ -30,6 +30,7 @@
 #include "xt_qtaguid_internal.h"
 #include "xt_qtaguid_print.h"
 
+#define pr_warn_once printk
 /*
  * We only use the xt_socket funcs within a similar context to avoid unexpected
  * return values.
@@ -769,6 +770,71 @@ done:
 	return iface_entry;
 }
 
+static int iface_stat_all_proc_read(char *page, char **num_items_returned,
+				    off_t items_to_skip, int char_count,
+				    int *eof, void *data)
+{
+	char *outp = page;
+	int item_index = 0;
+	int len;
+	struct iface_stat *iface_entry;
+	const struct net_device_stats *stats;
+	struct rtnl_link_stats64 no_dev_stats = {0};
+
+	if (unlikely(module_passive)) {
+		*eof = 1;
+		return 0;
+	}
+
+	CT_DEBUG("qtaguid:proc iface_stat_all "
+		 "page=%p *num_items_returned=%p off=%ld "
+		 "char_count=%d *eof=%d\n", page, *num_items_returned,
+		 items_to_skip, char_count, *eof);
+
+	if (*eof)
+		return 0;
+
+	/*
+	 * This lock will prevent iface_stat_update() from changing active,
+	 * and in turn prevent an interface from unregistering itself.
+	 */
+	spin_lock_bh(&iface_stat_list_lock);
+	list_for_each_entry(iface_entry, &iface_stat_list, list) {
+		if (item_index++ < items_to_skip)
+			continue;
+
+		if (iface_entry->active) {
+			stats = dev_get_stats(iface_entry->net_dev);
+		} else {
+			stats = &no_dev_stats;
+		}
+		len = snprintf(outp, char_count,
+			       "%s %d "
+			       "%llu %llu %llu %llu "
+			       "%lu %lu %lu %lu\n",
+			       iface_entry->ifname,
+			       iface_entry->active,
+			       iface_entry->totals[IFS_RX].bytes,
+			       iface_entry->totals[IFS_RX].packets,
+			       iface_entry->totals[IFS_TX].bytes,
+			       iface_entry->totals[IFS_TX].packets,
+			       stats->rx_bytes, stats->rx_packets,
+			       stats->tx_bytes, stats->tx_packets);
+		if (len >= char_count) {
+			spin_unlock_bh(&iface_stat_list_lock);
+			*outp = '\0';
+			return outp - page;
+		}
+		outp += len;
+		char_count -= len;
+		(*num_items_returned)++;
+	}
+	spin_unlock_bh(&iface_stat_list_lock);
+
+	*eof = 1;
+	return outp - page;
+}
+
 static void iface_create_proc_worker(struct work_struct *work)
 {
 	struct proc_dir_entry *proc_entry;
@@ -845,17 +911,17 @@ static struct iface_stat *iface_alloc(const char *ifname)
 static void iface_check_stats_reset_and_adjust(struct net_device *net_dev,
 					       struct iface_stat *iface)
 {
-	struct rtnl_link_stats64 dev_stats, *stats;
+	const struct net_device_stats *stats;
 	bool stats_rewound;
 
-	stats = dev_get_stats(net_dev, &dev_stats);
+	stats = dev_get_stats(net_dev);
 	/* No empty packets */
 	stats_rewound =
 		(stats->rx_bytes < iface->last_known[IFS_RX].bytes)
 		|| (stats->tx_bytes < iface->last_known[IFS_TX].bytes);
 
 	IF_DEBUG("qtaguid: %s(%s): iface=%p netdev=%p "
-		 "bytes rx/tx=%llu/%llu "
+		 "bytes rx/tx=%lu/%lu "
 		 "active=%d last_known=%d "
 		 "stats_rewound=%d\n", __func__,
 		 net_dev ? net_dev->name : "?",
@@ -1080,10 +1146,10 @@ data_counters_update(struct data_counters *dc,  enum ifs_tx_rx direction,
  */
 static void iface_stat_update(struct net_device *dev, bool stash_only)
 {
-	struct rtnl_link_stats64 dev_stats, *stats;
+	const struct net_device_stats *stats;
 	struct iface_stat *entry;
 
-	stats = dev_get_stats(dev, &dev_stats);
+	stats = dev_get_stats(net_dev);
 	spin_lock_bh(&iface_stat_list_lock);
 	entry = get_iface_entry(dev->name);
 	if (entry == NULL) {
@@ -1108,9 +1174,9 @@ static void iface_stat_update(struct net_device *dev, bool stash_only)
 		entry->last_known[IFS_RX].bytes = stats->rx_bytes;
 		entry->last_known[IFS_RX].packets = stats->rx_packets;
 		entry->last_known_valid = true;
-		IF_DEBUG("qtaguid: iface_stat: update(%s): "
-			 "dev stats stashed rx/tx=%llu/%llu\n",
-			 dev->name, stats->rx_bytes, stats->tx_bytes);
+		IF_DEBUG("qtaguid: %s(%s): "
+			 "dev stats stashed rx/tx=%lu/%lu\n", __func__,
+			 net_dev->name, stats->rx_bytes, stats->tx_bytes);
 		spin_unlock_bh(&iface_stat_list_lock);
 		return;
 	}
@@ -1120,10 +1186,10 @@ static void iface_stat_update(struct net_device *dev, bool stash_only)
 	entry->totals[IFS_RX].packets += stats->rx_packets;
 	/* We don't need the last_known[] anymore */
 	entry->last_known_valid = false;
-	entry->active = false;
-	IF_DEBUG("qtaguid: iface_stat: update(%s): "
-		 "disable tracking. rx/tx=%llu/%llu\n",
-		 dev->name, stats->rx_bytes, stats->tx_bytes);
+	_iface_stat_set_active(entry, net_dev, false);
+	IF_DEBUG("qtaguid: %s(%s): "
+		 "disable tracking. rx/tx=%lu/%lu\n", __func__,
+		 net_dev->name, stats->rx_bytes, stats->tx_bytes);
 	spin_unlock_bh(&iface_stat_list_lock);
 }
 
@@ -1422,9 +1488,11 @@ static struct sock *qtaguid_find_sk(const struct sk_buff *skb,
 		return NULL;
 
 	switch (par->family) {
+#ifdef XT_SOCKET_HAVE_IPV6
 	case NFPROTO_IPV6:
 		sk = xt_socket_get6_sk(skb, par);
 		break;
+#endif
 	case NFPROTO_IPV4:
 		sk = xt_socket_get4_sk(skb, par);
 		break;
