@@ -15,6 +15,7 @@
 #define DEBUG
 
 #include <linux/file.h>
+#include <linux/miscdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/module.h>
 #include <linux/netfilter/x_tables.h>
@@ -779,7 +780,7 @@ static int iface_stat_all_proc_read(char *page, char **num_items_returned,
 	int len;
 	struct iface_stat *iface_entry;
 	const struct net_device_stats *stats;
-	struct rtnl_link_stats64 no_dev_stats = {0};
+	struct net_device_stats no_dev_stats = {0};
 
 	if (unlikely(module_passive)) {
 		*eof = 1;
@@ -866,6 +867,24 @@ static void iface_create_proc_worker(struct work_struct *work)
 	IF_DEBUG("qtaguid: iface_stat: create_proc(): done "
 		 "entry=%p dev=%s\n", new_iface, new_iface->ifname);
 	kfree(isw);
+}
+
+/*
+ * Will set the entry's active state, and
+ * update the net_dev accordingly also.
+ */
+static void _iface_stat_set_active(struct iface_stat *entry,
+				   struct net_device *net_dev,
+				   bool activate)
+{
+	if (activate) {
+		entry->net_dev = net_dev;
+		entry->active = true;
+	} else {
+		entry->active = false;
+		entry->net_dev = NULL;
+
+	}
 }
 
 /* Caller must hold iface_stat_list_lock */
