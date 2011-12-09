@@ -296,7 +296,7 @@ ip6t_get_target(struct ip6t_entry *e)
 /* fn returns 0 to continue iteration */
 #define IP6T_ENTRY_ITERATE(entries, size, fn, args...) \
 	XT_ENTRY_ITERATE(struct ip6t_entry, entries, size, fn, ## args)
-
+#endif
 /*
  *	Main firewall chains definitions and global var's definitions.
  */

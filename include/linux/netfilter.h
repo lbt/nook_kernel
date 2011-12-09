@@ -355,3 +355,4 @@ static inline void nf_ct_attach(struct sk_buff *new, struct sk_buff *skb) {}
 
 #endif /*__KERNEL__*/
 #endif /*__LINUX_NETFILTER_H*/
+

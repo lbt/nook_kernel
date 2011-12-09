@@ -174,21 +174,6 @@ ipt_error(struct sk_buff *skb, const struct xt_action_param *par)
 	return NF_DROP;
 }
 
-/* Performance critical - called for every packet */
-static inline bool
-do_match(const struct ipt_entry_match *m, const struct sk_buff *skb,
-	 struct xt_match_param *par)
-{
-	par->match     = m->u.kernel.match;
-	par->matchinfo = m->data;
-
-	/* Stop iteration if it doesn't match */
-	if (!m->u.kernel.match->match(skb, par))
-		return true;
-	else
-		return false;
-}
-
 /* Performance critical */
 static inline struct ipt_entry *
 get_entry(const void *base, unsigned int offset)
@@ -288,6 +273,7 @@ static void trace_packet(const struct sk_buff *skb,
 	const void *table_base;
 	const struct ipt_entry *root;
 	const char *hookname, *chainname, *comment;
+	const struct ipt_entry *iter;
 	unsigned int rulenum = 0;
 
 	table_base = private->entries[smp_processor_id()];
@@ -296,10 +282,10 @@ static void trace_packet(const struct sk_buff *skb,
 	hookname = chainname = hooknames[hook];
 	comment = comments[NF_IP_TRACE_COMMENT_RULE];
 
-	IPT_ENTRY_ITERATE(root,
-			  private->size - private->hook_entry[hook],
-			  get_chainname_rulenum,
-			  e, hookname, &chainname, &comment, &rulenum);
+	xt_entry_foreach(iter, root, private->size - private->hook_entry[hook])
+		if (get_chainname_rulenum(iter, e, hookname,
+		    &chainname, &comment, &rulenum) != 0)
+			break;
 
 	nf_log_packet(AF_INET, hook, skb, in, out, &trace_loginfo,
 		      "TRACE: %s:%s:%s:%u ",
@@ -383,6 +369,7 @@ ipt_do_table(struct sk_buff *skb,
 			acpar.matchinfo = ematch->data;
 			if (!acpar.match->match(skb, &acpar))
 				goto no_match;
+		}
 
 		ADD_COUNTER(e->counters, ntohs(ip->tot_len), 1);
 
@@ -572,13 +559,9 @@ mark_source_chains(const struct xt_table_info *newinfo,
 	return 1;
 }
 
-static int
-cleanup_match(struct ipt_entry_match *m, struct net *net, unsigned int *i)
+static void cleanup_match(struct ipt_entry_match *m, struct net *net)
 {
 	struct xt_mtdtor_param par;
-
-	if (i && (*i)-- == 0)
-		return 1;
 
 	par.net       = net;
 	par.match     = m->u.kernel.match;
@@ -587,7 +570,6 @@ cleanup_match(struct ipt_entry_match *m, struct net *net, unsigned int *i)
 	if (par.match->destroy != NULL)
 		par.match->destroy(&par);
 	module_put(par.match->me);
-	return 0;
 }
 
 static int
@@ -612,8 +594,7 @@ check_entry(const struct ipt_entry *e, const char *name)
 }
 
 static int
-check_match(struct ipt_entry_match *m, struct xt_mtchk_param *par,
-	    unsigned int *i)
+check_match(struct ipt_entry_match *m, struct xt_mtchk_param *par)
 {
 	const struct ipt_ip *ip = par->entryinfo;
 	int ret;
@@ -628,13 +609,11 @@ check_match(struct ipt_entry_match *m, struct xt_mtchk_param *par,
 			 par.match->name);
 		return ret;
 	}
-	++*i;
 	return 0;
 }
 
 static int
-find_check_match(struct ipt_entry_match *m, struct xt_mtchk_param *par,
-		 unsigned int *i)
+find_check_match(struct ipt_entry_match *m, struct xt_mtchk_param *par)
 {
 	struct xt_match *match;
 	int ret;
@@ -647,7 +626,7 @@ find_check_match(struct ipt_entry_match *m, struct xt_mtchk_param *par,
 	}
 	m->u.kernel.match = match;
 
-	ret = check_match(m, par, i);
+	ret = check_match(m, par);
 	if (ret)
 		goto err;
 
@@ -657,10 +636,11 @@ err:
 	return ret;
 }
 
-static int check_target(struct ipt_entry *e, const char *name)
+static int check_target(struct ipt_entry *e, struct net *net, const char *name)
 {
 	struct ipt_entry_target *t = ipt_get_target(e);
 	struct xt_tgchk_param par = {
+		.net       = net,
 		.table     = name,
 		.entryinfo = e,
 		.target    = t->u.kernel.target,
@@ -696,17 +676,17 @@ find_check_entry(struct ipt_entry *e, struct net *net, const char *name,
 		return ret;
 
 	j = 0;
+	mtpar.net	= net;
 	mtpar.table     = name;
 	mtpar.entryinfo = &e->ip;
 	mtpar.hook_mask = e->comefrom;
 	mtpar.family    = NFPROTO_IPV4;
 	xt_ematch_foreach(ematch, e) {
-		ret = find_check_match(ematch, &mtpar, &j);
+		ret = find_check_match(ematch, &mtpar);
 		if (ret != 0)
-			break;
+			goto cleanup_matches;
+		++j;
 	}
-	if (ret != 0)
-		goto cleanup_matches;
 
 	t = ipt_get_target(e);
 	target = xt_request_find_target(NFPROTO_IPV4, t->u.user.name,
@@ -718,16 +698,18 @@ find_check_entry(struct ipt_entry *e, struct net *net, const char *name,
 	}
 	t->u.kernel.target = target;
 
-	ret = check_target(e, name);
+	ret = check_target(e, net, name);
 	if (ret)
 		goto err;
 	return 0;
  err:
 	module_put(t->u.kernel.target->me);
  cleanup_matches:
-	xt_ematch_foreach(ematch, e)
-		if (cleanup_match(ematch, net, &j) != 0)
+	xt_ematch_foreach(ematch, e) {
+		if (j-- == 0)
 			break;
+		cleanup_match(ematch, net);
+	}
 	return ret;
 }
 
@@ -802,10 +784,10 @@ cleanup_entry(struct ipt_entry *e, struct net *net)
 
 	/* Cleanup all matches */
 	xt_ematch_foreach(ematch, e)
-		if (cleanup_match(ematch, net, NULL) != 0)
-			break;
+		cleanup_match(ematch, net);
 	t = ipt_get_target(e);
 
+	par.net      = net;
 	par.target   = t->u.kernel.target;
 	par.targinfo = t->data;
 	par.family   = NFPROTO_IPV4;
@@ -820,8 +802,9 @@ static int
 translate_table(struct net *net, struct xt_table_info *newinfo, void *entry0,
                 const struct ipt_replace *repl)
 {
+	struct ipt_entry *iter;
 	unsigned int i;
-	int ret;
+	int ret = 0;
 
 	newinfo->size = repl->size;
 	newinfo->number = repl->num_entries;
@@ -904,6 +887,7 @@ static void
 get_counters(const struct xt_table_info *t,
 	     struct xt_counters counters[])
 {
+	struct ipt_entry *iter;
 	unsigned int cpu;
 	unsigned int i;
 	unsigned int curcpu;
@@ -1053,13 +1037,6 @@ static int compat_standard_to_user(void __user *dst, void *src)
 	return copy_to_user(dst, &cv, sizeof(cv)) ? -EFAULT : 0;
 }
 
-static inline int
-compat_calc_match(const struct ipt_entry_match *m, int *size)
-{
-	*size += xt_compat_match_offset(m->u.kernel.match);
-	return 0;
-}
-
 static int compat_calc_entry(const struct ipt_entry *e,
 			     const struct xt_table_info *info,
 			     const void *base, struct xt_table_info *newinfo)
@@ -1072,8 +1049,7 @@ static int compat_calc_entry(const struct ipt_entry *e,
 	off = sizeof(struct ipt_entry) - sizeof(struct compat_ipt_entry);
 	entry_offset = (void *)e - base;
 	xt_ematch_foreach(ematch, e)
-		if (compat_calc_match(ematch, &off) != 0)
-			break;
+		off += xt_compat_match_offset(ematch->u.kernel.match);
 	t = ipt_get_target_c(e);
 	off += xt_compat_target_offset(t->u.kernel.target);
 	newinfo->size -= off;
@@ -1095,6 +1071,7 @@ static int compat_calc_entry(const struct ipt_entry *e,
 static int compat_table_info(const struct xt_table_info *info,
 			     struct xt_table_info *newinfo)
 {
+	struct ipt_entry *iter;
 	void *loc_cpu_entry;
 	int ret;
 
@@ -1224,6 +1201,7 @@ __do_replace(struct net *net, const char *name, unsigned int valid_hooks,
 	struct xt_table_info *oldinfo;
 	struct xt_counters *counters;
 	void *loc_cpu_old_entry;
+	struct ipt_entry *iter;
 
 	ret = 0;
 	counters = vmalloc(num_counters * sizeof(struct xt_counters));
@@ -1293,6 +1271,7 @@ do_replace(struct net *net, const void __user *user, unsigned int len)
 	struct ipt_replace tmp;
 	struct xt_table_info *newinfo;
 	void *loc_cpu_entry;
+	struct ipt_entry *iter;
 
 	if (copy_from_user(&tmp, user, sizeof(tmp)) != 0)
 		return -EFAULT;
@@ -1300,6 +1279,7 @@ do_replace(struct net *net, const void __user *user, unsigned int len)
 	/* overflow check */
 	if (tmp.num_counters >= INT_MAX / sizeof(struct xt_counters))
 		return -ENOMEM;
+	tmp.name[sizeof(tmp.name)-1] = 0;
 
 	newinfo = xt_alloc_table_info(tmp.size);
 	if (!newinfo)
@@ -1328,7 +1308,6 @@ do_replace(struct net *net, const void __user *user, unsigned int len)
  free_newinfo_untrans:
 	xt_entry_foreach(iter, loc_cpu_entry, newinfo->size)
 		cleanup_entry(iter, net);
->>>>>>> 4f747a6... netfilter: xtables: optimize call flow around xt_entry_foreach
  free_newinfo:
 	xt_free_table_info(newinfo);
 	return ret;
@@ -1349,6 +1328,7 @@ do_add_counters(struct net *net, const void __user *user,
 	const struct xt_table_info *private;
 	int ret = 0;
 	void *loc_cpu_entry;
+	struct ipt_entry *iter;
 #ifdef CONFIG_COMPAT
 	struct compat_xt_counters_info compat_tmp;
 
@@ -1459,11 +1439,9 @@ compat_copy_entry_to_user(struct ipt_entry *e, void __user **dstptr,
 	xt_ematch_foreach(ematch, e) {
 		ret = xt_compat_match_to_user(ematch, dstptr, size);
 		if (ret != 0)
-			break;
+			return ret;
 	}
 	target_offset = e->target_offset - (origsize - *size);
-	if (ret)
-		return ret;
 	t = ipt_get_target(e);
 	ret = xt_compat_target_to_user(t, dstptr, size);
 	if (ret)
@@ -1480,7 +1458,7 @@ compat_find_calc_match(struct ipt_entry_match *m,
 		       const char *name,
 		       const struct ipt_ip *ip,
 		       unsigned int hookmask,
-		       int *size, unsigned int *i)
+		       int *size)
 {
 	struct xt_match *match;
 
@@ -1493,18 +1471,6 @@ compat_find_calc_match(struct ipt_entry_match *m,
 	}
 	m->u.kernel.match = match;
 	*size += xt_compat_match_offset(match);
-
-	(*i)++;
-	return 0;
-}
-
-static int
-compat_release_match(struct ipt_entry_match *m, unsigned int *i)
-{
-	if (i && (*i)-- == 0)
-		return 1;
-
-	module_put(m->u.kernel.match->me);
 	return 0;
 }
 
@@ -1515,8 +1481,7 @@ static void compat_release_entry(struct compat_ipt_entry *e)
 
 	/* Cleanup all matches */
 	xt_ematch_foreach(ematch, e)
-		if (compat_release_match(ematch, NULL) != 0)
-			break;
+		module_put(ematch->u.kernel.match->me);
 	t = compat_ipt_get_target(e);
 	module_put(t->u.kernel.target->me);
 }
@@ -1562,12 +1527,11 @@ check_compat_entry_size_and_hooks(struct compat_ipt_entry *e,
 	j = 0;
 	xt_ematch_foreach(ematch, e) {
 		ret = compat_find_calc_match(ematch, name,
-		      &e->ip, e->comefrom, &off, &j);
+		      &e->ip, e->comefrom, &off);
 		if (ret != 0)
-			break;
+			goto release_matches;
+		++j;
 	}
-	if (ret != 0)
-		goto release_matches;
 
 	t = compat_ipt_get_target(e);
 	target = xt_request_find_target(NFPROTO_IPV4, t->u.user.name,
@@ -1602,9 +1566,11 @@ check_compat_entry_size_and_hooks(struct compat_ipt_entry *e,
 out:
 	module_put(t->u.kernel.target->me);
 release_matches:
-	xt_ematch_foreach(ematch, e)
-		if (compat_release_match(ematch, &j) != 0)
+	xt_ematch_foreach(ematch, e) {
+		if (j-- == 0)
 			break;
+		module_put(ematch->u.kernel.match->me);
+	}
 	return ret;
 }
 
@@ -1632,10 +1598,8 @@ compat_copy_entry_from_user(struct compat_ipt_entry *e, void **dstptr,
 	xt_ematch_foreach(ematch, e) {
 		ret = xt_compat_match_from_user(ematch, dstptr, size);
 		if (ret != 0)
-			break;
+			return ret;
 	}
-	if (ret)
-		return ret;
 	de->target_offset = e->target_offset - (origsize - *size);
 	t = compat_ipt_get_target(e);
 	target = t->u.kernel.target;
@@ -1660,32 +1624,35 @@ compat_check_entry(struct ipt_entry *e, struct net *net, const char *name)
 	int ret = 0;
 
 	j = 0;
+	mtpar.net	= net;
 	mtpar.table     = name;
 	mtpar.entryinfo = &e->ip;
 	mtpar.hook_mask = e->comefrom;
 	mtpar.family    = NFPROTO_IPV4;
 	xt_ematch_foreach(ematch, e) {
-		ret = check_match(ematch, &mtpar, &j);
+		ret = check_match(ematch, &mtpar);
 		if (ret != 0)
-			break;
+			goto cleanup_matches;
+		++j;
 	}
-	if (ret)
-		goto cleanup_matches;
 
-	ret = check_target(e, name);
+	ret = check_target(e, net, name);
 	if (ret)
 		goto cleanup_matches;
 	return 0;
 
  cleanup_matches:
-	xt_ematch_foreach(ematch, e)
-		if (cleanup_match(ematch, net, &j) != 0)
+	xt_ematch_foreach(ematch, e) {
+		if (j-- == 0)
 			break;
+		cleanup_match(ematch, net);
+	}
 	return ret;
 }
 
 static int
-translate_compat_table(const char *name,
+translate_compat_table(struct net *net,
+		       const char *name,
 		       unsigned int valid_hooks,
 		       struct xt_table_info **pinfo,
 		       void **pentry0,
@@ -1697,6 +1664,8 @@ translate_compat_table(const char *name,
 	unsigned int i, j;
 	struct xt_table_info *newinfo, *info;
 	void *pos, *entry0, *entry1;
+	struct compat_ipt_entry *iter0;
+	struct ipt_entry *iter1;
 	unsigned int size;
 	int ret;
 
@@ -1761,9 +1730,12 @@ translate_compat_table(const char *name,
 	entry1 = newinfo->entries[raw_smp_processor_id()];
 	pos = entry1;
 	size = total_size;
-	ret = COMPAT_IPT_ENTRY_ITERATE(entry0, total_size,
-				       compat_copy_entry_from_user,
-				       &pos, &size, name, newinfo, entry1);
+	xt_entry_foreach(iter0, entry0, total_size) {
+		ret = compat_copy_entry_from_user(iter0, &pos,
+		      &size, name, newinfo, entry1);
+		if (ret != 0)
+			break;
+	}
 	xt_compat_flush_offsets(AF_INET);
 	xt_compat_unlock(AF_INET);
 	if (ret)
@@ -1781,6 +1753,12 @@ translate_compat_table(const char *name,
 		++i;
 	}
 	if (ret) {
+		/*
+		 * The first i matches need cleanup_entry (calls ->destroy)
+		 * because they had called ->check already. The other j-i
+		 * entries need only release.
+		 */
+		int skip = i;
 		j -= i;
 		xt_entry_foreach(iter0, entry0, newinfo->size) {
 			if (skip-- > 0)
@@ -1830,6 +1808,7 @@ compat_do_replace(struct net *net, void __user *user, unsigned int len)
 	struct compat_ipt_replace tmp;
 	struct xt_table_info *newinfo;
 	void *loc_cpu_entry;
+	struct ipt_entry *iter;
 
 	if (copy_from_user(&tmp, user, sizeof(tmp)) != 0)
 		return -EFAULT;
@@ -1839,6 +1818,7 @@ compat_do_replace(struct net *net, void __user *user, unsigned int len)
 		return -ENOMEM;
 	if (tmp.num_counters >= INT_MAX / sizeof(struct xt_counters))
 		return -ENOMEM;
+	tmp.name[sizeof(tmp.name)-1] = 0;
 
 	newinfo = xt_alloc_table_info(tmp.size);
 	if (!newinfo)
@@ -1852,7 +1832,7 @@ compat_do_replace(struct net *net, void __user *user, unsigned int len)
 		goto free_newinfo;
 	}
 
-	ret = translate_compat_table(tmp.name, tmp.valid_hooks,
+	ret = translate_compat_table(net, tmp.name, tmp.valid_hooks,
 				     &newinfo, &loc_cpu_entry, tmp.size,
 				     tmp.num_entries, tmp.hook_entry,
 				     tmp.underflow);
@@ -1918,6 +1898,7 @@ compat_copy_entries_to_user(unsigned int total_size, struct xt_table *table,
 	int ret = 0;
 	const void *loc_cpu_entry;
 	unsigned int i = 0;
+	struct ipt_entry *iter;
 
 	counters = alloc_counters(table);
 	if (IS_ERR(counters))
@@ -2067,6 +2048,7 @@ do_ipt_get_ctl(struct sock *sk, int cmd, void __user *user, int *len)
 			ret = -EFAULT;
 			break;
 		}
+		rev.name[sizeof(rev.name)-1] = 0;
 
 		if (cmd == IPT_SO_GET_REVISION_TARGET)
 			target = 1;
@@ -2131,6 +2113,7 @@ void ipt_unregister_table(struct net *net, struct xt_table *table)
 	struct xt_table_info *private;
 	void *loc_cpu_entry;
 	struct module *table_owner = table->me;
+	struct ipt_entry *iter;
 
 	private = xt_unregister_table(table);
 
@@ -2305,3 +2288,4 @@ EXPORT_SYMBOL(ipt_unregister_table);
 EXPORT_SYMBOL(ipt_do_table);
 module_init(ip_tables_init);
 module_exit(ip_tables_fini);
+

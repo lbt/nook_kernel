@@ -39,6 +39,7 @@ struct net {
 #endif
 	struct list_head	list;		/* list of network namespaces */
 	struct work_struct	work;		/* work struct for freeing */
+        struct list_head        exit_list;      /* Use only net_mutex */
 
 	struct proc_dir_entry 	*proc_net;
 	struct proc_dir_entry 	*proc_net_stat;
@@ -234,6 +235,7 @@ struct pernet_operations {
 	struct list_head list;
 	int (*init)(struct net *net);
 	void (*exit)(struct net *net);
+        void (*exit_batch)(struct list_head *net_exit_list);
 };
 
 /*

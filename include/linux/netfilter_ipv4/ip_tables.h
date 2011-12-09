@@ -236,7 +236,7 @@ ipt_get_target(struct ipt_entry *e)
 /* fn returns 0 to continue iteration */
 #define IPT_ENTRY_ITERATE(entries, size, fn, args...) \
 	XT_ENTRY_ITERATE(struct ipt_entry, entries, size, fn, ## args)
-
+#endif
 /*
  *	Main firewall chains definitions and global var's definitions.
  */

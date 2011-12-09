@@ -236,6 +236,7 @@ struct xt_action_param {
  * @hook_mask:	via which hooks the new rule is reachable
  */
 struct xt_mtchk_param {
+	struct net *net;
 	const char *table;
 	const void *entryinfo;
 	const struct xt_match *match;
@@ -262,6 +263,7 @@ struct xt_mtdtor_param {
  * Other fields see above.
  */
 struct xt_tgchk_param {
+	struct net *net;
 	const char *table;
 	const void *entryinfo;
 	const struct xt_target *target;
@@ -272,6 +274,7 @@ struct xt_tgchk_param {
 
 /* Target destructor parameters */
 struct xt_tgdtor_param {
+	struct net *net;
 	const struct xt_target *target;
 	void *targinfo;
 	u_int8_t family;

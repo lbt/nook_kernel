@@ -623,8 +623,9 @@ static inline void cleanup_entry(struct arpt_entry *e)
 static int translate_table(struct xt_table_info *newinfo, void *entry0,
                            const struct arpt_replace *repl)
 {
+	struct arpt_entry *iter;
 	unsigned int i;
-	int ret;
+	int ret = 0;
 
 	newinfo->size = repl->size;
 	newinfo->number = repl->num_entries;
@@ -712,6 +713,7 @@ static int translate_table(struct xt_table_info *newinfo, void *entry0,
 static void get_counters(const struct xt_table_info *t,
 			 struct xt_counters counters[])
 {
+	struct arpt_entry *iter;
 	unsigned int cpu;
 	unsigned int i;
 	unsigned int curcpu;
@@ -872,6 +874,7 @@ static int compat_calc_entry(const struct arpt_entry *e,
 static int compat_table_info(const struct xt_table_info *info,
 			     struct xt_table_info *newinfo)
 {
+	struct arpt_entry *iter;
 	void *loc_cpu_entry;
 	int ret;
 
@@ -1002,6 +1005,7 @@ static int __do_replace(struct net *net, const char *name,
 	struct xt_table_info *oldinfo;
 	struct xt_counters *counters;
 	void *loc_cpu_old_entry;
+	struct arpt_entry *iter;
 
 	ret = 0;
 	counters = vmalloc_node(num_counters * sizeof(struct xt_counters),
@@ -1072,6 +1076,7 @@ static int do_replace(struct net *net, const void __user *user,
 	struct arpt_replace tmp;
 	struct xt_table_info *newinfo;
 	void *loc_cpu_entry;
+	struct arpt_entry *iter;
 
 	if (copy_from_user(&tmp, user, sizeof(tmp)) != 0)
 		return -EFAULT;
@@ -1079,6 +1084,7 @@ static int do_replace(struct net *net, const void __user *user,
 	/* overflow check */
 	if (tmp.num_counters >= INT_MAX / sizeof(struct xt_counters))
 		return -ENOMEM;
+	tmp.name[sizeof(tmp.name)-1] = 0;
 
 	newinfo = xt_alloc_table_info(tmp.size);
 	if (!newinfo)
@@ -1126,6 +1132,7 @@ static int do_add_counters(struct net *net, const void __user *user,
 	const struct xt_table_info *private;
 	int ret = 0;
 	void *loc_cpu_entry;
+	struct arpt_entry *iter;
 #ifdef CONFIG_COMPAT
 	struct compat_xt_counters_info compat_tmp;
 
@@ -1327,8 +1334,10 @@ static int translate_compat_table(const char *name,
 	unsigned int i, j;
 	struct xt_table_info *newinfo, *info;
 	void *pos, *entry0, *entry1;
+	struct compat_arpt_entry *iter0;
+	struct arpt_entry *iter1;
 	unsigned int size;
-	int ret;
+	int ret = 0;
 
 	info = *pinfo;
 	entry0 = *pentry0;
@@ -1391,9 +1400,12 @@ static int translate_compat_table(const char *name,
 	entry1 = newinfo->entries[raw_smp_processor_id()];
 	pos = entry1;
 	size = total_size;
-	ret = COMPAT_ARPT_ENTRY_ITERATE(entry0, total_size,
-					compat_copy_entry_from_user,
-					&pos, &size, name, newinfo, entry1);
+	xt_entry_foreach(iter0, entry0, total_size) {
+		ret = compat_copy_entry_from_user(iter0, &pos,
+		      &size, name, newinfo, entry1);
+		if (ret != 0)
+			break;
+	}
 	xt_compat_flush_offsets(NFPROTO_ARP);
 	xt_compat_unlock(NFPROTO_ARP);
 	if (ret)
@@ -1411,6 +1423,12 @@ static int translate_compat_table(const char *name,
 		++i;
 	}
 	if (ret) {
+		/*
+		 * The first i matches need cleanup_entry (calls ->destroy)
+		 * because they had called ->check already. The other j-i
+		 * entries need only release.
+		 */
+		int skip = i;
 		j -= i;
 		xt_entry_foreach(iter0, entry0, newinfo->size) {
 			if (skip-- > 0)
@@ -1472,6 +1490,7 @@ static int compat_do_replace(struct net *net, void __user *user,
 	struct compat_arpt_replace tmp;
 	struct xt_table_info *newinfo;
 	void *loc_cpu_entry;
+	struct arpt_entry *iter;
 
 	if (copy_from_user(&tmp, user, sizeof(tmp)) != 0)
 		return -EFAULT;
@@ -1481,6 +1500,7 @@ static int compat_do_replace(struct net *net, void __user *user,
 		return -ENOMEM;
 	if (tmp.num_counters >= INT_MAX / sizeof(struct xt_counters))
 		return -ENOMEM;
+	tmp.name[sizeof(tmp.name)-1] = 0;
 
 	newinfo = xt_alloc_table_info(tmp.size);
 	if (!newinfo)
@@ -1586,6 +1606,7 @@ static int compat_copy_entries_to_user(unsigned int total_size,
 	int ret = 0;
 	void *loc_cpu_entry;
 	unsigned int i = 0;
+	struct arpt_entry *iter;
 
 	counters = alloc_counters(table);
 	if (IS_ERR(counters))
@@ -1732,6 +1753,7 @@ static int do_arpt_get_ctl(struct sock *sk, int cmd, void __user *user, int *len
 			ret = -EFAULT;
 			break;
 		}
+		rev.name[sizeof(rev.name)-1] = 0;
 
 		try_then_request_module(xt_find_revision(NFPROTO_ARP, rev.name,
 							 rev.revision, 1, &ret),
@@ -1790,6 +1812,7 @@ void arpt_unregister_table(struct xt_table *table)
 	struct xt_table_info *private;
 	void *loc_cpu_entry;
 	struct module *table_owner = table->me;
+	struct arpt_entry *iter;
 
 	private = xt_unregister_table(table);
 
