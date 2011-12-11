@@ -36,6 +36,7 @@
 #include <linux/usb.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/f_accessory.h>
+#include <linux/usb/composite.h>
 
 #define BULK_BUFFER_SIZE    16384
 #define ACC_STRING_SIZE     256

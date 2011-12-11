@@ -338,7 +338,7 @@ static struct {
 	.vendor			= FSG_VENDOR_ID,
 	.product		= FSG_PRODUCT_ID,
 	.release		= 0xffff,	// Use controller chip type
-	.buflen			= 32768,
+	.buflen			= 16384,
 	};
 
 

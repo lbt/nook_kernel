@@ -84,6 +84,7 @@ struct usb_mass_storage_platform_data {
 
 	/* number of LUNS */
 	int nluns;
+	size_t bulk_size;
 };
 
 /* Platform data for USB ethernet driver. */

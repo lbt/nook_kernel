@@ -37,6 +37,8 @@
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 
+#define USB_GADGET_DELAYED_STATUS       0x7fff  /* Impossibly large value */
+
 /*
  * USB function drivers should return USB_GADGET_DELAYED_STATUS if they
  * wish to delay the status phase of the setup transfer till they are
@@ -242,6 +244,9 @@ struct usb_configuration {
 };
 
 int usb_add_config(struct usb_composite_dev *,
+		struct usb_configuration *);
+
+int usb_remove_config(struct usb_composite_dev *,
 		struct usb_configuration *);
 
 /**

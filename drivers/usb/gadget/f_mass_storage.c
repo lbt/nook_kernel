@@ -297,6 +297,7 @@
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/usb/composite.h>
 
 #include "gadget_chips.h"
 
@@ -1408,6 +1409,7 @@ static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
 		put_unaligned_be16(len - 2, buf0);
 	return len;
 }
+
 
 static int do_start_stop(struct fsg_common *common)
 {
