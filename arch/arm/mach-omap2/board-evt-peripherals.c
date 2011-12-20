@@ -44,6 +44,7 @@
 #include <linux/kxtf9.h>
 #include <linux/max17042.h>
 
+
 #define KXTF9_DEVICE_ID                 "kxtf9"
 #define KXTF9_I2C_SLAVE_ADDRESS         0x0F
 #define KXTF9_GPIO_FOR_PWR              34
@@ -141,7 +142,7 @@ int  cyttsp_dev_init(int resource)
 static struct cyttsp_platform_data cyttsp_platform_data = {
         .maxx = 480,
         .maxy = 800,
-        .flags = 0,
+        .flags = FLIP_DATA_FLAG | REVERSE_Y_FLAG,
         .gen = CY_GEN3,
         .use_st = CY_USE_ST,
         .use_mt = CY_USE_MT,
@@ -193,11 +194,11 @@ struct kxtf9_platform_data kxtf9_platform_data_here = {
 	// Map the axes from the sensor to the device.
 
 	//. SETTINGS FOR THE EVT1A:
-	.axis_map_x     = 1,
-	.axis_map_y     = 0,
+	.axis_map_x     = 0,
+	.axis_map_y     = 1,
 	.axis_map_z     = 2,
 	.negate_x       = 1,
-	.negate_y       = 0,
+	.negate_y       = 1,
 	.negate_z       = 0,
 
 	.data_odr_init          = ODR12_5F,
