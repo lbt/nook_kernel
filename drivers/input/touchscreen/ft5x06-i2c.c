@@ -330,7 +330,7 @@ void ft5x06_xy_worker(struct work_struct *work)
         rev_y = false;
     }
 
-    rev_y = true;
+    // rev_y = true;
 
     /* process the touches */
     switch (cur_tch)
@@ -475,7 +475,7 @@ void ft5x06_xy_worker(struct work_struct *work)
                     input_report_abs(ts->input, ABS_MT_WIDTH_MAJOR, curr_tool_width);
                     input_report_abs(ts->input, ABS_MT_POSITION_X,  ts->prv_mt_pos[id][FT_XPOS]);
                     input_report_abs(ts->input, ABS_MT_POSITION_Y,  ts->prv_mt_pos[id][FT_YPOS]);
-
+		    input_report_key(ts->input, BTN_TOUCH, 0);
                     FT_MT_SYNC(ts->input);
 
                     ts->act_trk[id] = FT_NTCH;
@@ -494,7 +494,7 @@ void ft5x06_xy_worker(struct work_struct *work)
                     input_report_abs(ts->input, ABS_MT_WIDTH_MAJOR, curr_tool_width);
                     input_report_abs(ts->input, ABS_MT_POSITION_X,  cur_mt_pos[id][FT_XPOS]);
                     input_report_abs(ts->input, ABS_MT_POSITION_Y,  cur_mt_pos[id][FT_YPOS]);
-
+		    input_report_key(ts->input, BTN_TOUCH, 1);
                     FT_MT_SYNC(ts->input);
 
                     ts->act_trk[id] = FT_TCH;
@@ -623,6 +623,7 @@ void ft5x06_xy_worker(struct work_struct *work)
             input_report_abs(ts->input, ABS_HAT1X, g_xy_data.gest_id);
             input_report_abs(ts->input, ABS_HAT2X, tch_data.status);
             input_report_abs(ts->input, ABS_HAT2Y, gest_count);
+            input_report_key(ts->input, BTN_TOUCH, 1);
 
             prev_gest = g_xy_data.gest_id;
         }
