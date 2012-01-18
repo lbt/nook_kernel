@@ -84,6 +84,7 @@ struct cyttsp {
 #endif /* CONFIG_HAS_EARLYSUSPEND */
 	struct regulator *reg;
 };
+int clear_touch = 0;           /* ics multi-touch workaround */
 static u8 irq_cnt;		/* comparison counter with register valuw */
 static u32 irq_cnt_total;	/* total interrupts */
 static u32 irq_err_cnt;		/* count number of touch interrupts with err */
@@ -1010,6 +1011,18 @@ void cyttsp_xy_worker(struct work_struct *work)
 
 	}
 
+
+       /* Workaround ICS Multi-touch issue */
+       clear_touch = 0;
+       for (id = 0; id < CY_NUM_TRK_ID; id++) {
+               if (ts->act_trk[id] == 1) {
+               clear_touch++;
+               }
+       }
+       if (clear_touch == 2 && cur_tch == 0) {
+               clear_touch = 1;
+       }
+
 	/* handle Multi-touch signals */
 	if (ts->platform_data->use_mt) {
 		if (ts->platform_data->use_trk_id) {
@@ -1017,7 +1030,7 @@ void cyttsp_xy_worker(struct work_struct *work)
 			 * is missing from the current event */
 			for (id = 0; id < CY_NUM_TRK_ID; id++) {
 				if ((ts->act_trk[id] != CY_NTCH) &&
-					(cur_trk[id] == CY_NTCH)) {
+					(cur_trk[id] == CY_NTCH) && (clear_touch == 1)) {
 					input_report_abs(ts->input,
 						ABS_MT_TRACKING_ID,
 						id);
