@@ -200,18 +200,18 @@ static int dac3100_power_down(struct snd_soc_codec *codec);
 static int dac3100_power_up(struct snd_soc_codec *codec);
 static int dac3100_mute_codec (struct snd_soc_codec *codec, int mute);
 
-static int dac_level_show(struct device *dev,
+static ssize_t dac_level_show(struct device *dev,
         struct device_attribute *attr, char *buf);
-static int dac_level_store(struct device *dev,
+static ssize_t dac_level_store(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t hp_analog_gain_show(struct device *dev,
         struct device_attribute *attr, char *buf);
-static int hp_analog_gain_show(struct device *dev,
+static ssize_t hp_analog_gain_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t spkr_analog_gain_show(struct device *dev,
         struct device_attribute *attr, char *buf);
-static int hp_analog_gain_store(struct device *dev,
-        struct device_attribute *attr, char *buf);
-static int spkr_analog_gain_show(struct device *dev,
-        struct device_attribute *attr, char *buf);
-static int spkr_analog_gain_store(struct device *dev,
-        struct device_attribute *attr, char *buf);
+static ssize_t spkr_analog_gain_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count);
 
 /*
 *****************************************************************************
@@ -2716,16 +2716,16 @@ module_exit(tlv320dac3100_exit);
 *****************************************************************************
 */
 
-static int dac_level_show(struct device *dev,
+static ssize_t dac_level_show(struct device *dev,
         struct device_attribute *attr, char *buf)
 {
-    int gain = dac3100_read(dac3100_codec, LDAC_VOL);
+    unsigned int gain = dac3100_read(dac3100_codec, LDAC_VOL);
     gain = max(gain, dac3100_read(dac3100_codec, RDAC_VOL));
     return sprintf(buf, "%u\n", gain);
 }
 
-static int dac_level_store(struct device *dev,
-        struct device_attribute *attr, char *buf)
+static ssize_t dac_level_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count)
 {
     unsigned short gain;
     if (sscanf(buf, "%hu", &gain) == 1) {
@@ -2739,19 +2739,21 @@ static int dac_level_store(struct device *dev,
         //Set DAC gain
         dac3100_write(dac3100_codec, LDAC_VOL, left_dac_gain);
         dac3100_write(dac3100_codec, RDAC_VOL, right_dac_gain);
+	return count;
     }
+    return -EINVAL;
 }   
 
-static int hp_analog_gain_show(struct device *dev,
+static ssize_t hp_analog_gain_show(struct device *dev,
         struct device_attribute *attr, char *buf)
 {
-    int gain = dac3100_read(dac3100_codec, RIGHT_ANALOG_HPR);
+    unsigned int gain = dac3100_read(dac3100_codec, RIGHT_ANALOG_HPR);
     gain = max(gain, dac3100_read(dac3100_codec, LEFT_ANALOG_HPL));
     return sprintf(buf, "%u\n", gain);
 }
 
-static int hp_analog_gain_store(struct device *dev,
-        struct device_attribute *attr, char *buf)
+static ssize_t hp_analog_gain_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count)
 {
     unsigned short gain;
     if (sscanf(buf, "%hu", &gain) == 1) {
@@ -2767,19 +2769,21 @@ static int hp_analog_gain_store(struct device *dev,
         //Set HP analog gain
         dac3100_write(dac3100_codec, RIGHT_ANALOG_HPR, hp_r_analog_gain);
         dac3100_write(dac3100_codec, LEFT_ANALOG_HPL, hp_l_analog_gain);
+	return count;
     }
+    return -EINVAL;
 }
 
-static int spkr_analog_gain_show(struct device *dev,
+static ssize_t spkr_analog_gain_show(struct device *dev,
         struct device_attribute *attr, char *buf)
 {
-    int gain = dac3100_read(dac3100_codec, RIGHT_ANALOG_SPR);
+    unsigned int gain = dac3100_read(dac3100_codec, RIGHT_ANALOG_SPR);
     gain = max(gain, dac3100_read(dac3100_codec, LEFT_ANALOG_SPL));
     return sprintf(buf, "%u\n", gain);
 }
 
-static int spkr_analog_gain_store(struct device *dev,
-        struct device_attribute *attr, char *buf)
+static ssize_t spkr_analog_gain_store(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t count)
 {
     unsigned short gain;
     if (sscanf(buf, "%hu", &gain) == 1) {
@@ -2795,7 +2799,9 @@ static int spkr_analog_gain_store(struct device *dev,
         //Set HP analog gain
         dac3100_write(dac3100_codec, RIGHT_ANALOG_SPR, spkr_analog_gain);
         dac3100_write(dac3100_codec, LEFT_ANALOG_SPL, spkr_analog_gain);
+	return count;
     }
+    return -EINVAL;
 }
 
 MODULE_DESCRIPTION("ASoC TLV320dac3100 codec driver");
