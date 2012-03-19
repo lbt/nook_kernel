@@ -82,9 +82,9 @@
 #endif
 
 #if defined(__linux__)
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,35)) && defined(SGX_OCP_REGS_ENABLED)
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,32)) && defined(SGX_OCP_REGS_ENABLED)
 #if !defined(SGX544)
-/*#define SGX_OCP_NO_INT_BYPASS*/
+#define SGX_OCP_NO_INT_BYPASS
 #endif
 #endif
 #endif
