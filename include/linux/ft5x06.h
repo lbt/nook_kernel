@@ -297,10 +297,6 @@
 #define FT5x06_FMREG_LOG_CUR_CHA        0xFF
 #define FT5x06_FMREG_MAX                0xFF
 
-#define NUM_RXCAC_REGS                  30
-#define NUM_TXCAC_REGS                  40
-
-
 /********************************************************************
  * Register Bits & Masks: DEVICE_MODE
  */
@@ -425,6 +421,12 @@
 #endif /* FT_USE_LOW_POWER */
 
 /* helper macros */
+#define GET_NUM_TOUCHES(x)      ((x) & 0x0F)
+#define GET_TOUCH1_ID(x)        (((x) & 0xF0) >> 4)
+#define GET_TOUCH2_ID(x)        ((x) & 0x0F)
+#define GET_TOUCH3_ID(x)        (((x) & 0xF0) >> 4)
+#define GET_TOUCH4_ID(x)        ((x) & 0x0F)
+#define IS_LARGE_AREA(x)        (((x) & 0x10) >> 4)
 #define FLIP_DATA_FLAG          0x01
 #define REVERSE_X_FLAG          0x02
 #define REVERSE_Y_FLAG          0x04
@@ -439,6 +441,9 @@
                             }
 #define INVERT_X(x, xmax)       ((xmax) - (x))
 #define INVERT_Y(y, ymax)       ((ymax) - (y))
+#define SET_HSTMODE(reg, mode)  ((reg) & (mode))
+#define GET_HSTMODE(reg)        ((reg & 0x70) >> 4)
+#define GET_BOOTLOADERMODE(reg) ((reg & 0x10) >> 4)
 
 /* constant definitions */
 /* maximum number of concurrent ST track IDs */
@@ -487,6 +492,8 @@ struct ft5x06_platform_data {
 	u8 power_state;
 	s32 (*init)(struct i2c_client *client);
 	s32 (*resume)(struct i2c_client *client);
+	void (*platform_suspend)(void);
+	void (*platform_resume)(void);
 };
 
 struct ft5x06_xydata_t {

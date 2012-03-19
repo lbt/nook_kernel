@@ -57,6 +57,19 @@ static struct regulator *boxer_panel_regulator;
 static struct spi_device *boxer_spi_device;
 static atomic_t boxer_panel_is_enabled = ATOMIC_INIT(0);
 
+/* Get FT i2c adapter for lock/unlock it */
+struct i2c_adapter *g_ft_i2c_adapter = NULL;
+
+extern void register_ft_i2c_adapter(struct i2c_adapter *adapter)
+{
+    g_ft_i2c_adapter = adapter;
+}
+
+extern void unregister_ft_i2c_adapter(struct i2c_adapter *adapter)
+{
+    g_ft_i2c_adapter = NULL;
+}
+
 /*NEC NL8048HL11-01B  Manual
  * defines HFB, HSW, HBP, VFP, VSW, VBP as shown below
  */
