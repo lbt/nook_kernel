@@ -140,8 +140,8 @@ int  cyttsp_dev_init(int resource)
 }
 
 static struct cyttsp_platform_data cyttsp_platform_data = {
-        .maxx = 480,
-        .maxy = 800,
+        .maxx = 1024,
+        .maxy = 600,
         .flags = FLIP_DATA_FLAG | REVERSE_Y_FLAG,
         .gen = CY_GEN3,
         .use_st = CY_USE_ST,
